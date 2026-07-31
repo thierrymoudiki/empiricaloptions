@@ -1,9 +1,9 @@
 {
-    "path": "~/Documents/R_Packages/empoptions/tests",
+    "path": "~/Documents/R_Packages/empoptions",
     "sortOrder": [
         {
             "columnIndex": 2,
-            "ascending": true
+            "ascending": false
         }
     ]
 }
