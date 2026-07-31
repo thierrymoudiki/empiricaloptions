@@ -1,0 +1,25 @@
+Package: empiricaloptions
+Type: Package
+Title: Empirical 'Martingale' Option Pricing from Historical Data
+Version: 0.1.0
+Authors@R: person("Thierry", "Moudiki", role = c("aut", "cre"), email = "thierry.moudiki@gmail.com")
+Description: Prices European and arithmetic Asian options directly from a single
+    historical price series, with no option-market calibration input. An AR(1)
+    filter removes linear predictability from discounted log-prices, a stationary
+    block bootstrap (Politis and Romano, 1994) resamples the residuals to preserve
+    dependence beyond the mean, and a Duan-Simonato (1998) scalar correction
+    enforces the martingale condition required by the Fundamental Theorem of Asset
+    Pricing. Intended for underlyings with no quoted option market to calibrate
+    against (private indices, embedded insurance options, participation
+    certificates).
+License: BSD_3_clause + file LICENSE
+Encoding: UTF-8
+LazyData: true
+Depends: R (>= 3.5)
+Imports: tseries, stats
+Suggests: testthat (>= 3.0.0), knitr, rmarkdown, quantmod, FinTS
+Config/testthat/edition: 3
+RoxygenNote: 7.3.2
+VignetteBuilder: knitr
+URL: https://github.com/thierrymoudiki/empoptions
+BugReports: https://github.com/thierrymoudiki/empoptions/issues

@@ -1,0 +1,199 @@
+---
+title: "Pricing options from live data with quantmod, compared to Black-Scholes"
+author: "Thierry Moudiki"
+date: "`r Sys.Date()`"
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{Pricing options from live data with quantmod, compared to Black-Scholes}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r setup, include = FALSE}
+knitr::opts_chunk$set(
+  collapse = TRUE, comment = "#>", fig.width = 7, fig.height = 5,
+  eval = requireNamespace("quantmod", quietly = TRUE)
+)
+```
+
+## Overview
+
+This vignette prices European and Asian options on a real, live-pulled underlying
+using only `empiricaloptions` and its own price history -- no option-quote market is
+used to calibrate anything. We then compare the European prices to Black-Scholes
+prices computed at the underlying's own trailing **historical** volatility, which
+is the natural baseline to check against when (as `empiricaloptions` assumes) no
+implied-volatility surface is available: it isolates what the AR(1) + stationary
+block bootstrap machinery buys you over the simplest possible historical
+alternative, a plain GBM assumption fed the same estimation window.
+
+```{r libs}
+library(empiricaloptions)
+suppressPackageStartupMessages({
+  library(quantmod)
+  library(zoo)
+})
+```
+
+## 1. Pull the underlying
+
+We use SPY (S&P 500 ETF) as a liquid, easily-verified stand-in for the kind of
+underlying `empiricaloptions` targets -- the method itself does not care whether an
+option market exists for it.
+
+```{r pull-data}
+end_date   <- Sys.Date()
+start_date <- end_date - 3 * 365   # trailing 3y of daily data
+
+getSymbols("SPY", src = "yahoo", from = start_date, to = end_date,
+           auto.assign = TRUE)
+
+spy_close <- as.numeric(Cl(SPY))
+spy_dates <- index(SPY)
+
+na_idx <- which(is.na(spy_close))
+if (length(na_idx) > 0) {
+  z <- na.approx(zoo(spy_close, order.by = spy_dates), maxgap = 3, na.rm = FALSE)
+  spy_close <- as.numeric(z)
+  spy_dates <- spy_dates[!is.na(spy_close)]
+  spy_close <- spy_close[!is.na(spy_close)]
+}
+
+S0 <- tail(spy_close, 1)
+cat(sprintf("Series: %d obs, %s to %s. S0 = %.2f\n",
+            length(spy_close), spy_dates[1], tail(spy_dates, 1), S0))
+```
+
+## 2. Build the empirical pool
+
+A single `eq_pool()` call does the AR(1) filtering and stationary block
+bootstrap described in the companion paper. We use a flat short-term discount
+rate as a stand-in for the funding rate; substitute a real curve if you have
+one.
+
+```{r build-pool}
+r_flat <- 0.045   # illustrative flat discount rate
+
+pool <- eq_pool(prices = spy_close, r = r_flat, n_sims = 10000)
+pool
+```
+
+The printed diagnostics matter here: a Ljung-Box $p$-value near 1 says the AR(1)
+step has removed the linear structure it was meant to remove, while a very small
+ARCH-LM $p$-value confirms the residuals still carry volatility clustering --
+exactly the dependence the block (rather than i.i.d.) bootstrap is designed to
+preserve.
+
+## 3. Price European options and compare to Black-Scholes
+
+For the Black-Scholes comparison we use the pool's own trailing annualized
+volatility (`pool$ann_vol`) as the input $\sigma$ -- i.e. we ask: relative to
+the simplest possible historical-volatility GBM price, what does preserving the
+higher-order dependence structure (fat tails, volatility clustering) change?
+
+```{r bs-helper}
+bs_call <- function(S, K, r, sigma, T) {
+  d1 <- (log(S / K) + (r + 0.5 * sigma^2) * T) / (sigma * sqrt(T))
+  S * pnorm(d1) - K * exp(-r * T) * pnorm(d1 - sigma * sqrt(T))
+}
+bs_put <- function(S, K, r, sigma, T) {
+  bs_call(S, K, r, sigma, T) - S + K * exp(-r * T)
+}
+```
+
+```{r price-grid}
+T_grid <- c(0.0833, 0.25, 0.5, 1)         # 1m, 3m, 6m, 1y
+moneyness <- seq(0.85, 1.15, by = 0.025)
+K_grid <- round(S0 * moneyness)
+
+results <- do.call(rbind, lapply(T_grid, function(Tj) {
+  call_res <- eq_price(pool, S0 = S0, T = Tj, K = K_grid, type = "call")
+  put_res  <- eq_price(pool, S0 = S0, T = Tj, K = K_grid, type = "put")
+  bs_c <- bs_call(S0, K_grid, r_flat, pool$ann_vol, Tj)
+  bs_p <- bs_put(S0, K_grid, r_flat, pool$ann_vol, Tj)
+
+  data.frame(
+    T = Tj, K = K_grid, moneyness = K_grid / S0,
+    model_call = call_res$prices, bs_call = bs_c,
+    model_put = put_res$prices, bs_put = bs_p,
+    call_diff_pctS0 = 100 * (call_res$prices - bs_c) / S0
+  )
+}))
+
+head(results, 10)
+```
+
+## 4. Visualize
+
+```{r plot-calls, fig.cap = "Model call price (solid) vs Black-Scholes at historical volatility (dashed), by maturity."}
+par(mfrow = c(2, 2), mar = c(4, 4, 2, 1))
+for (Tj in T_grid) {
+  d <- results[results$T == Tj, ]
+  plot(d$K, d$bs_call, type = "b", pch = 1, lty = 2, col = "steelblue",
+       xlab = "Strike", ylab = "Call price",
+       main = sprintf("T = %.2f", Tj),
+       ylim = range(c(d$bs_call, d$model_call)))
+  lines(d$K, d$model_call, type = "b", pch = 19, col = "coral")
+  abline(v = S0, col = "gray70", lty = 3)
+}
+par(mfrow = c(1, 1))
+```
+
+```{r plot-moneyness, fig.cap = "Price difference (model minus Black-Scholes), as a percentage of S0, by moneyness."}
+plot(results$moneyness, results$call_diff_pctS0, pch = 19,
+     col = adjustcolor(as.numeric(as.factor(results$T)), 0.6),
+     xlab = "Moneyness K/S0", ylab = "Model - BS (% of S0)",
+     main = "Call price difference by moneyness")
+abline(h = 0, col = "gray50", lty = 2)
+legend("topleft", legend = sprintf("T=%.2f", sort(unique(results$T))),
+       col = seq_along(unique(results$T)), pch = 19, cex = 0.8, bty = "n")
+```
+
+As in the DAX example in the companion paper, expect the largest deviations
+away from at-the-money strikes: the block bootstrap carries whatever skew and
+excess kurtosis are actually present in SPY's realized residuals (see
+`pool$skew` and `pool$excess_kurt` below), while the Black-Scholes reference
+curve is, by construction, symmetric in log-moneyness.
+
+```{r pool-diagnostics}
+data.frame(
+  ann_vol = pool$ann_vol,
+  skew = pool$skew,
+  excess_kurt = pool$excess_kurt,
+  phi = pool$phi
+)
+```
+
+## 5. Internal consistency: put-call parity
+
+Because calls and puts are priced from the *same* simulated terminal draws,
+put-call parity should hold to floating-point precision, not just Monte Carlo
+precision -- this is a useful sanity check whenever you point `empiricaloptions` at a
+new underlying.
+
+```{r parity-check}
+parity_error <- with(results, (model_call - model_put) - (S0 - K * exp(-r_flat * T)))
+cat("Max abs parity error (price units):", max(abs(parity_error)), "\n")
+cat("As % of S0:", 100 * max(abs(parity_error)) / S0, "\n")
+```
+
+## 6. A path-dependent example: arithmetic Asian calls
+
+The same pool prices Asian options with no extra calibration step -- useful
+precisely when no option market (vanilla or exotic) exists to calibrate a
+path-dependent model against.
+
+```{r asian-example}
+asian_prices <- eq_price_asian(pool, S0 = S0, T = 0.5, K = K_grid, n_fix = 6)
+asian_prices
+```
+
+## Summary
+
+Given nothing but `SPY`'s own trailing price history and a discount rate,
+`empiricaloptions` produced a full European surface across four maturities, an
+arithmetic Asian quote, and an internal put-call parity check -- all without
+touching a single quoted option price. Swap `"SPY"` for any `quantmod`-gettable
+ticker, or replace the `getSymbols()` call with your own CSV of prices for
+underlyings quantmod cannot reach (a private index, a fund NAV series, an
+insurance-linked index), and the rest of this vignette runs unchanged.
