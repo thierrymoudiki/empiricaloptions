@@ -20,6 +20,8 @@ remotes::install_github("Techtonique/empiricaloptions")
 
 ## Usage
 
+Also read the vignette. 
+
 ```r
 library(empiricaloptions)
 
@@ -44,4 +46,4 @@ paper. Not yet on CRAN.
 
 ## License
 
-MIT
+BSD3 Clause Clear
